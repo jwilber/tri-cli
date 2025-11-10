@@ -1,0 +1,78 @@
+{
+	"name": "tri-cli",
+	"version": "0.0.3",
+	"description": "Interactive CLI directory tree visualizer with treemap view",
+	"author": "Jared Wilber",
+	"license": "MIT",
+	"keywords": [
+		"cli",
+		"tree",
+		"directory",
+		"treemap",
+		"visualization",
+		"interactive"
+	],
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/jwilber/tri-cli.git"
+	},
+	"bin": {
+		"tri": "dist/cli.js"
+	},
+	"type": "module",
+	"engines": {
+		"node": ">=16"
+	},
+	"scripts": {
+		"build": "babel --out-dir=dist source",
+		"postbuild": "chmod +x dist/cli.js",
+		"dev": "babel --out-dir=dist --watch source",
+		"test": "prettier --check . && xo && ava",
+		"test:local": "npm run build && tri --dir . -L 2"
+	},
+	"files": [
+		"dist"
+	],
+	"dependencies": {
+		"d3-hierarchy": "^3.1.2",
+		"ink": "^4.1.0",
+		"meow": "^11.0.0",
+		"react": "^18.2.0",
+		"tri-cli": "^0.0.3"
+	},
+	"devDependencies": {
+		"@babel/cli": "^7.21.0",
+		"@babel/preset-react": "^7.28.5",
+		"@vdemedes/prettier-config": "^2.0.1",
+		"ava": "^5.2.0",
+		"chalk": "^5.2.0",
+		"eslint-config-xo-react": "^0.27.0",
+		"eslint-plugin-react": "^7.32.2",
+		"eslint-plugin-react-hooks": "^4.6.0",
+		"import-jsx": "^5.0.0",
+		"ink-testing-library": "^3.0.0",
+		"prettier": "^2.8.7",
+		"xo": "^0.53.1"
+	},
+	"ava": {
+		"environmentVariables": {
+			"NODE_NO_WARNINGS": "1"
+		},
+		"nodeArguments": [
+			"--loader=import-jsx"
+		]
+	},
+	"xo": {
+		"extends": "xo-react",
+		"prettier": true,
+		"rules": {
+			"react/prop-types": "off"
+		}
+	},
+	"prettier": "@vdemedes/prettier-config",
+	"babel": {
+		"presets": [
+			"@babel/preset-react"
+		]
+	}
+}
