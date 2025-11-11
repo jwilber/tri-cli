@@ -383,6 +383,25 @@ const TreeVisualization = ({ dirPath = '.', maxLevel = 1, noSize = true, collaps
 
 	if (showTreeMap) {
 		const node = visibleNodes[selectedIndex];
+		
+		// Populate value property for treemap visualization
+		const populateValues = (n) => {
+			if (!n) return;
+			// Set value from calculatedSizes if available
+			const calcSize = calculatedSizes.get(n.data.path);
+			if (calcSize !== undefined) {
+				n.data.value = calcSize;
+			} else if (n.data.isFile) {
+				n.data.value = n.data.size;
+			}
+			// Recursively populate children
+			if (n.children) {
+				n.children.forEach(populateValues);
+			}
+		};
+		
+		populateValues(node);
+		
 		return <TreeMapView selectedNode={node} stdout={stdout} />;
 	}
 
