@@ -34,6 +34,26 @@ const formatBytes = bytes => {
 	return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 };
 
+const formatDate = timestamp => {
+	const date = new Date(timestamp);
+	const now = new Date();
+	const diffDays = Math.floor((now - date) / (1000 * 60 * 60 * 24));
+	
+	const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+	const month = months[date.getMonth()];
+	const day = date.getDate().toString().padStart(2, ' ');
+	
+	// If file is from this year, show time; otherwise show year
+	if (diffDays < 180) {
+		const hours = date.getHours().toString().padStart(2, '0');
+		const minutes = date.getMinutes().toString().padStart(2, '0');
+		return `${month} ${day} ${hours}:${minutes}`;
+	} else {
+		const year = date.getFullYear();
+		return `${month} ${day}  ${year}`;
+	}
+};
+
 // Async non-blocking directory size
 const getDirSizeAsync = async dirPath => {
 	try {
@@ -107,7 +127,7 @@ const getFileColor = filename => {
 
 // Exclude m, t, d
 const generateShortcut = (index, isFile, parentShortcut = '') => {
-	const letters = 'abcefgijklnopqrsuvwxyz';
+	const letters = 'abcefgijknopqrsuvwxyz';
 	const base = letters.length;
 	if (isFile) return `${parentShortcut}${index + 1}`;
 	let label = '';
@@ -119,14 +139,45 @@ const generateShortcut = (index, isFile, parentShortcut = '') => {
 	return parentShortcut + label;
 };
 
+// Generate tree lines (like the `tree` command)
+const getTreeLines = (node) => {
+	if (node.depth === 0) return ''; // Root has no lines
+	
+	const lines = [];
+	let current = node;
+	
+	// Build the lines from current node up to (but not including) root
+	while (current.parent && current.parent.depth > 0) {
+		const parent = current.parent;
+		const isLastChild = parent.children && current === parent.children[parent.children.length - 1];
+		lines.unshift(isLastChild ? '   ' : '│  ');
+		current = parent;
+	}
+	
+	// Add the final connector for this node
+	const parent = node.parent;
+	if (parent && parent.depth === 0) {
+		// Direct child of root
+		const isLastChild = parent.children && node === parent.children[parent.children.length - 1];
+		return isLastChild ? '╰─' : '├─';
+	} else if (parent) {
+		const isLastChild = parent.children && node === parent.children[parent.children.length - 1];
+		return lines.join('') + (isLastChild ? '╰─' : '├─');
+	}
+	
+	return '';
+};
+
 const SPINNER_FRAMES = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
 
 const TreeRow = React.memo(
-	({ node, isSelected, collapsed, shortcutInput, noSize, calculatedSizes, loadingPaths, spinnerFrame }) => {
+	({ node, isSelected, collapsed, shortcutInput, noSize, calculatedSizes, loadingPaths, spinnerFrame, lastModifiedDates }) => {
 		const isCollapsed = collapsed.has(node.data.path);
 		const hasChildren = node.children && node.children.length > 0;
 		const isLoading = loadingPaths.has(node.data.path);
 		const fileColor = node.data.isFile ? getFileColor(node.data.name) : oneHunter.magenta;
+		const isRoot = node.depth === 0;
+		const isDirectory = !node.data.isFile;
 
 		let displaySize = 0;
 		// Use calculated size if available, otherwise fall back to node.data.size
@@ -135,6 +186,9 @@ const TreeRow = React.memo(
 		} else {
 			displaySize = node.data.size;
 		}
+
+		const lastModified = lastModifiedDates.get(node.data.path);
+		const treeLines = getTreeLines(node);
 
 		// ✅ Restore highlight logic
 		const renderShortcut = () => {
@@ -167,20 +221,33 @@ const TreeRow = React.memo(
 		return (
 			<Box>
 				<Text>
-					<Text color={oneHunter.textAlt}>{node.depth > 0 ? ' '.repeat(node.depth * 2) : ''}</Text>
-					<Text color={hasChildren ? oneHunter.cyan : oneHunter.textAlt}>
-						{hasChildren ? (isCollapsed ? '▶ ' : '▼ ') : '  '}
-					</Text>
+					{/* Tree lines */}
+					{!isRoot && <Text color={oneHunter.textAlt}>{treeLines}</Text>}
+					
+					{/* Arrow for directories (same color as tree lines) */}
+					{!isRoot && isDirectory && (
+						<Text color={oneHunter.textAlt}>
+							{/* Show ▼ only if expanded (has children and not collapsed), otherwise ▶ */}
+							{hasChildren && !isCollapsed ? '▼ ' : '▶ '}
+						</Text>
+					)}
+					{!isRoot && !isDirectory && <Text color={oneHunter.textAlt}>─ </Text>}
+					
+					{/* File/directory name */}
 					<Text
 						bold={isSelected}
 						color={isSelected ? oneHunter.bg : fileColor}
 						backgroundColor={isSelected ? oneHunter.green : undefined}
 					>
-						{node.data.name}{!node.data.isFile ? '/' : ''}
+						{node.data.name}{!node.data.isFile && !isRoot ? '/' : ''}
 					</Text>
+					
+					{/* Children count for directories */}
 					{hasChildren && !isCollapsed && (
 						<Text color={oneHunter.textAlt}> ({node.children.length})</Text>
 					)}
+					
+					{/* Size or loading indicator */}
 					{isLoading ? (
 						<Text color={oneHunter.yellow}> {SPINNER_FRAMES[spinnerFrame]}</Text>
 					) : displaySize > 0 ? (
@@ -188,7 +255,14 @@ const TreeRow = React.memo(
 					) : (
 						<Text> </Text>
 					)}
+					
+					{/* Shortcut */}
 					{renderShortcut()}
+					
+					{/* Last modified date (always show if available) */}
+					{lastModified && (
+						<Text color={oneHunter.text2}> {formatDate(lastModified)}</Text>
+					)}
 				</Text>
 			</Box>
 		);
@@ -205,6 +279,7 @@ const TreeVisualization = ({ dirPath = '.', maxLevel = 1, noSize = true, collaps
 	const [loadingPaths, setLoadingPaths] = useState(new Set());
 	const [spinnerFrame, setSpinnerFrame] = useState(0);
 	const [rootTree, setRootTree] = useState(() => hierarchy(readDirTree(dirPath, noSize, 0, maxLevel)));
+	const [lastModifiedDates, setLastModifiedDates] = useState(new Map());
 
 	const { stdout } = useStdout();
 	const terminalHeight = stdout?.rows || 24;
@@ -348,6 +423,47 @@ const TreeVisualization = ({ dirPath = '.', maxLevel = 1, noSize = true, collaps
 		}
 	};
 
+	const getLastModifiedAsync = async node => {
+		// Collect node and all its descendants
+		const nodesToProcess = [];
+		const collectNodes = (n) => {
+			// Skip if already have date
+			if (lastModifiedDates.has(n.data.path)) {
+				// Still recurse to children in case they need dates
+				if (n.children) {
+					n.children.forEach(collectNodes);
+				}
+				return;
+			}
+			nodesToProcess.push(n);
+			if (n.children) {
+				n.children.forEach(collectNodes);
+			}
+		};
+		collectNodes(node);
+		
+		if (nodesToProcess.length === 0) return; // Nothing to process
+		
+		const newMap = new Map(lastModifiedDates);
+		
+		// Get mtime for each node
+		for (const targetNode of nodesToProcess) {
+			try {
+				const stats = fs.statSync(targetNode.data.path);
+				newMap.set(targetNode.data.path, stats.mtimeMs);
+			} catch {
+				// If we can't stat the file, skip it
+			}
+			
+			// Stream the update immediately
+			React.startTransition(() => {
+				setLastModifiedDates(new Map(newMap));
+			});
+			
+			await new Promise(r => setTimeout(r, 0));
+		}
+	};
+
 	const traverseDir = async node => {
 		if (node.data.isFile) return;
 		
@@ -469,6 +585,12 @@ const TreeVisualization = ({ dirPath = '.', maxLevel = 1, noSize = true, collaps
 			return;
 		}
 
+		if (input === 'l') {
+			const node = visibleNodes[selectedIndex];
+			if (node) await getLastModifiedAsync(node);
+			return;
+		}
+
 		if (key.upArrow) {
 			setSelectedIndex(p => Math.max(0, p - 1));
 			setShortcutInput('');
@@ -482,6 +604,9 @@ const TreeVisualization = ({ dirPath = '.', maxLevel = 1, noSize = true, collaps
 		if (key.return) {
 			const node = visibleNodes[selectedIndex];
 			if (!node) return;
+			
+			// Don't allow collapsing/expanding the root
+			if (node.depth === 0) return;
 			
 			if (node.data.isFile) return; // Do nothing for files
 			
@@ -572,7 +697,7 @@ const TreeVisualization = ({ dirPath = '.', maxLevel = 1, noSize = true, collaps
 		<Box flexDirection="column">
 			<Box justifyContent="space-between">
 				<Text color={oneHunter.textAlt} dimColor>
-					↑/↓: Navigate | Enter: Expand/Traverse | d: Size | m: Map | Shift+C: Toggle Children | Shift+O: Toggle All | Esc/q: Quit
+					↑/↓: Navigate | Enter: Expand/Traverse | d: Size | l: Date | m: Map | q: Quit
 				</Text>
 				{loadingPaths.size > 0 && (
 					<Text color={oneHunter.yellow}>
@@ -591,6 +716,7 @@ const TreeVisualization = ({ dirPath = '.', maxLevel = 1, noSize = true, collaps
 					calculatedSizes={calculatedSizes}
 					loadingPaths={loadingPaths}
 					spinnerFrame={spinnerFrame}
+					lastModifiedDates={lastModifiedDates}
 				/>
 			))}
 		</Box>
