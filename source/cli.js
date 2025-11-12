@@ -176,7 +176,7 @@ const TreeRow = React.memo(
 						color={isSelected ? oneHunter.bg : fileColor}
 						backgroundColor={isSelected ? oneHunter.green : undefined}
 					>
-						{node.data.name}
+						{node.data.name}{!node.data.isFile ? '/' : ''}
 					</Text>
 					{hasChildren && !isCollapsed && (
 						<Text color={oneHunter.textAlt}> ({node.children.length})</Text>
@@ -453,19 +453,11 @@ const TreeVisualization = ({ dirPath = '.', maxLevel = 1, noSize = true, collaps
 			return;
 		}
 
-		if (input === 't') {
-			const node = visibleNodes[selectedIndex];
-			if (node) await traverseDir(node);
-			return;
-		}
-
 		if (input === 'm') {
 			const node = visibleNodes[selectedIndex];
 			if (!node) return;
-			// Start calculating sizes in the background if not already done (don't await)
-			if (!calculatedSizes.has(node.data.path)) {
-				calculateSizeAsync(node);
-			}
+			// Always start calculating sizes in the background (calculateSizeAsync skips already-calculated nodes)
+			calculateSizeAsync(node);
 			// Show treemap immediately
 			setShowTreeMap(true);
 			return;
@@ -489,13 +481,22 @@ const TreeVisualization = ({ dirPath = '.', maxLevel = 1, noSize = true, collaps
 		}
 		if (key.return) {
 			const node = visibleNodes[selectedIndex];
-			if (node && node.children)
+			if (!node) return;
+			
+			if (node.data.isFile) return; // Do nothing for files
+			
+			// If it's a directory with no children loaded yet, traverse into it
+			if (node.data.children === undefined) {
+				await traverseDir(node);
+			} else if (node.children) {
+				// Children already loaded, toggle collapse
 				setCollapsed(prev => {
 					const next = new Set(prev);
 					if (next.has(node.data.path)) next.delete(node.data.path);
 					else next.add(node.data.path);
 					return next;
 				});
+			}
 			setShortcutInput('');
 			return;
 		}
@@ -514,22 +515,45 @@ const TreeVisualization = ({ dirPath = '.', maxLevel = 1, noSize = true, collaps
 	if (showTreeMap) {
 		const node = visibleNodes[selectedIndex];
 		
-		// Populate value property for treemap visualization from calculatedSizes
-		const populateValues = (n) => {
-			if (!n) return;
-			// Set value from calculatedSizes if available
-			const calcSize = calculatedSizes.get(n.data.path);
-			if (calcSize !== undefined) {
-				n.data.value = calcSize;
-			} else if (n.data.isFile) {
-				n.data.value = n.data.size;
-			} else {
-				// For directories without calculated size, use 0 (will be updated as data streams in)
-				n.data.value = 0;
+		// Populate value property on DATA objects for treemap visualization
+		// This is important because TreeMapView creates a new hierarchy from node.data,
+		// so we need to set values on the data objects, not the hierarchy nodes
+		const populateValues = (hierarchyNode) => {
+			if (!hierarchyNode) return;
+			
+			// Recursively populate children first (depth-first, bottom-up)
+			if (hierarchyNode.children) {
+				hierarchyNode.children.forEach(populateValues);
 			}
-			// Recursively populate children
-			if (n.children) {
-				n.children.forEach(populateValues);
+			
+			// Set value on the DATA object
+			const data = hierarchyNode.data;
+			
+			if (data.isFile) {
+				// Files: use calculatedSize or read from disk
+				const calcSize = calculatedSizes.get(data.path);
+				if (calcSize !== undefined) {
+					data.value = calcSize;
+				} else {
+					try {
+						data.value = fs.statSync(data.path).size;
+					} catch {
+						data.value = 0;
+					}
+				}
+			} else if (data.children === undefined || !hierarchyNode.children || hierarchyNode.children.length === 0) {
+				// Directory with no children loaded OR empty directory
+				// Use calculatedSize if available
+				const calcSize = calculatedSizes.get(data.path);
+				if (calcSize !== undefined) {
+					data.value = calcSize;
+				} else {
+					// For unloaded directories without calculated size, will show as 0
+					data.value = data.size || 0;
+				}
+			} else {
+				// Directory with loaded children - let d3's .sum() aggregate from children
+				data.value = undefined;
 			}
 		};
 		
@@ -548,7 +572,7 @@ const TreeVisualization = ({ dirPath = '.', maxLevel = 1, noSize = true, collaps
 		<Box flexDirection="column">
 			<Box justifyContent="space-between">
 				<Text color={oneHunter.textAlt} dimColor>
-					↑/↓: Navigate | Enter: Toggle | d: Size | t: Traverse | m: Map | q: Quit
+					↑/↓: Navigate | Enter: Expand/Traverse | d: Size | m: Map | Shift+C: Toggle Children | Shift+O: Toggle All | Esc/q: Quit
 				</Text>
 				{loadingPaths.size > 0 && (
 					<Text color={oneHunter.yellow}>
