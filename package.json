@@ -1,6 +1,6 @@
 {
 	"name": "tri-cli",
-	"version": "0.0.4",
+	"version": "0.0.51",
 	"description": "Interactive CLI directory tree visualizer with treemap view",
 	"author": "Jared Wilber",
 	"license": "MIT",
@@ -28,7 +28,7 @@
 		"postbuild": "chmod +x dist/cli.js",
 		"dev": "babel --out-dir=dist --watch source",
 		"test": "prettier --check . && xo && ava",
-		"test:local": "npm run build && tri --dir . -L 2"
+		"test:local": "npm run build && node dist/cli.js --dir . -L 2"
 	},
 	"files": [
 		"dist"
@@ -37,8 +37,7 @@
 		"d3-hierarchy": "^3.1.2",
 		"ink": "^4.1.0",
 		"meow": "^11.0.0",
-		"react": "^18.2.0",
-		"tri-cli": "^0.0.3"
+		"react": "^18.2.0"
 	},
 	"devDependencies": {
 		"@babel/cli": "^7.21.0",
