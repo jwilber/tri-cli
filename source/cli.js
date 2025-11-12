@@ -53,7 +53,12 @@ const getDirSizeAsync = async dirPath => {
 const readDirTree = (dirPath, noSize = true, currentLevel = 0, maxLevel = Infinity) => {
 	try {
 		const stats = fs.statSync(dirPath);
-		const name = path.basename(dirPath) || dirPath;
+		let name = path.basename(dirPath);
+		// If basename is empty (root) or '.', use the absolute path's last component or full path
+		if (!name || name === '.') {
+			const resolved = path.resolve(dirPath);
+			name = path.basename(resolved) || resolved;
+		}
 		if (!stats.isDirectory()) {
 			const size = noSize ? 0 : stats.size;
 			return { name, path: dirPath, isFile: true, size };
@@ -231,25 +236,34 @@ const TreeVisualization = ({ dirPath = '.', maxLevel = 1, noSize = true, collaps
 			// Set all nodes as loading
 			setLoadingPaths(new Set(nodesToCalculate.map(n => n.data.path)));
 			
-			// Calculate sizes for all nodes
+			// Calculate sizes for all nodes with streaming updates
 			for (const node of nodesToCalculate) {
 				const sz = node.data.isFile
 					? fs.statSync(node.data.path).size
 					: await getDirSizeAsync(node.data.path);
 				newMap.set(node.data.path, sz);
 				
-				// Update incrementally for better UX
-				setCalculatedSizes(new Map(newMap));
+				// Stream update immediately (using startTransition to deprioritize render)
+				React.startTransition(() => {
+					setCalculatedSizes(new Map(newMap));
+					setLoadingPaths(prev => {
+						const next = new Set(prev);
+						next.delete(node.data.path);
+						return next;
+					});
+				});
+				
+				await new Promise(r => setTimeout(r, 0));
 			}
-			
-			// Clear loading state
-			setLoadingPaths(new Set());
 		};
 		
 		preloadAllSizes();
 	}, [noSize, rootTree]);
 
 	useEffect(() => {
+		// Only initialize collapse state on first mount, not on every rootTree change
+		if (initialized) return;
+		
 		const newCollapsed = new Set();
 		const applyLevel = (node, level = 0) => {
 			if (node.children) {
@@ -260,7 +274,7 @@ const TreeVisualization = ({ dirPath = '.', maxLevel = 1, noSize = true, collaps
 		applyLevel(rootTree);
 		setCollapsed(newCollapsed);
 		setInitialized(true);
-	}, [rootTree, maxLevel, collapseAll]);
+	}, []);
 
 	const assignShortcuts = (node, parentShortcut = '', siblingIndex = 0) => {
 		node.shortcut = generateShortcut(siblingIndex, node.data.isFile, parentShortcut);
@@ -287,37 +301,83 @@ const TreeVisualization = ({ dirPath = '.', maxLevel = 1, noSize = true, collaps
 	}, [visibleNodes]);
 
 	const calculateSizeAsync = async node => {
-		if (calculatedSizes.has(node.data.path)) return;
-		setLoadingPaths(prev => new Set(prev).add(node.data.path));
+		// Collect node and all its descendants (not just visible ones)
+		const nodesToCalculate = [];
+		const collectNodes = (n) => {
+			// Skip if already calculated
+			if (calculatedSizes.has(n.data.path)) {
+				// Still recurse to children in case they need calculation
+				if (n.children) {
+					n.children.forEach(collectNodes);
+				}
+				return;
+			}
+			nodesToCalculate.push(n);
+			if (n.children) {
+				n.children.forEach(collectNodes);
+			}
+		};
+		collectNodes(node);
+		
+		if (nodesToCalculate.length === 0) return; // Nothing to calculate
+		
+		// Mark all nodes as loading
+		const pathsToLoad = nodesToCalculate.map(n => n.data.path);
+		setLoadingPaths(prev => new Set([...prev, ...pathsToLoad]));
 
 		const newMap = new Map(calculatedSizes);
-		const calcAndSetSize = async targetNode => {
+		
+		// Calculate and stream updates for each node individually
+		for (const targetNode of nodesToCalculate) {
 			const sz = targetNode.data.isFile
 				? fs.statSync(targetNode.data.path).size
 				: await getDirSizeAsync(targetNode.data.path);
 			newMap.set(targetNode.data.path, sz);
+			
+			// Stream the update immediately (using startTransition to deprioritize render)
+			React.startTransition(() => {
+				setCalculatedSizes(new Map(newMap));
+				setLoadingPaths(prev => {
+					const next = new Set(prev);
+					next.delete(targetNode.data.path);
+					return next;
+				});
+			});
+			
 			await new Promise(r => setTimeout(r, 0));
-		};
-
-		await calcAndSetSize(node);
-		if (node.children)
-			for (const child of node.children)
-				await calcAndSetSize(child);
-
-		setCalculatedSizes(newMap);
-		setLoadingPaths(prev => {
-			const next = new Set(prev);
-			next.delete(node.data.path);
-			return next;
-		});
+		}
 	};
 
 	const traverseDir = async node => {
 		if (node.data.isFile) return;
-		if (node.data.children !== undefined) return; // already loaded
-		const newTree = readDirTree(node.data.path, true, 0, 1);
-		node.data.children = newTree.children;
-		setRootTree(rootTree.copy());
+		
+		// If children are undefined (not loaded yet), load them
+		if (node.data.children === undefined) {
+			// Load the children
+			const newTree = readDirTree(node.data.path, true, 0, 1);
+			if (newTree && newTree.children) {
+				node.data.children = newTree.children;
+				// Update both states - remove from collapsed and rebuild tree
+				setCollapsed(prev => {
+					const next = new Set(prev);
+					next.delete(node.data.path);
+					return next;
+				});
+				const newRootData = rootTree.data;
+				setRootTree(hierarchy(newRootData));
+			}
+		} else {
+			// Children already loaded, just toggle expand
+			setCollapsed(prev => {
+				const next = new Set(prev);
+				if (next.has(node.data.path)) {
+					next.delete(node.data.path);
+				} else {
+					next.add(node.data.path);
+				}
+				return next;
+			});
+		}
 	};
 
 	useInput(async (input, key) => {
@@ -326,6 +386,72 @@ const TreeVisualization = ({ dirPath = '.', maxLevel = 1, noSize = true, collaps
 			return;
 		}
 		if (input === 'q') process.exit(0);
+
+		if (input === 'C') {
+			// Toggle collapse/expand all children of the selected node's PARENT
+			const selectedNode = visibleNodes[selectedIndex];
+			if (!selectedNode || !selectedNode.parent) return;
+			
+			const parentNode = selectedNode.parent;
+			
+			// Get all descendant nodes with children
+			const descendants = [];
+			const collectDescendants = (node) => {
+				if (node.children && node.children.length > 0) {
+					descendants.push(node);
+					node.children.forEach(collectDescendants);
+				}
+			};
+			collectDescendants(parentNode);
+			
+			if (descendants.length === 0) return; // No children to collapse
+			
+			// Check if all descendants are collapsed
+			const allCollapsed = descendants.every(n => collapsed.has(n.data.path));
+			
+			setCollapsed(prev => {
+				const next = new Set(prev);
+				descendants.forEach(n => {
+					if (allCollapsed) {
+						next.delete(n.data.path);
+					} else {
+						next.add(n.data.path);
+					}
+				});
+				return next;
+			});
+			return;
+		}
+
+		if (input === 'O') {
+			// Toggle collapse/expand ALL nodes in the entire tree
+			const allNodesWithChildren = [];
+			const collectAll = (node) => {
+				if (node.children && node.children.length > 0) {
+					allNodesWithChildren.push(node);
+					node.children.forEach(collectAll);
+				}
+			};
+			collectAll(rootTree);
+			
+			if (allNodesWithChildren.length === 0) return;
+			
+			// Check if all nodes are collapsed
+			const allCollapsed = allNodesWithChildren.every(n => collapsed.has(n.data.path));
+			
+			setCollapsed(prev => {
+				const next = new Set(prev);
+				allNodesWithChildren.forEach(n => {
+					if (allCollapsed) {
+						next.delete(n.data.path);
+					} else {
+						next.add(n.data.path);
+					}
+				});
+				return next;
+			});
+			return;
+		}
 
 		if (input === 't') {
 			const node = visibleNodes[selectedIndex];
@@ -336,7 +462,11 @@ const TreeVisualization = ({ dirPath = '.', maxLevel = 1, noSize = true, collaps
 		if (input === 'm') {
 			const node = visibleNodes[selectedIndex];
 			if (!node) return;
-			if (!calculatedSizes.has(node.data.path)) await calculateSizeAsync(node);
+			// Start calculating sizes in the background if not already done (don't await)
+			if (!calculatedSizes.has(node.data.path)) {
+				calculateSizeAsync(node);
+			}
+			// Show treemap immediately
 			setShowTreeMap(true);
 			return;
 		}
@@ -384,7 +514,7 @@ const TreeVisualization = ({ dirPath = '.', maxLevel = 1, noSize = true, collaps
 	if (showTreeMap) {
 		const node = visibleNodes[selectedIndex];
 		
-		// Populate value property for treemap visualization
+		// Populate value property for treemap visualization from calculatedSizes
 		const populateValues = (n) => {
 			if (!n) return;
 			// Set value from calculatedSizes if available
@@ -393,6 +523,9 @@ const TreeVisualization = ({ dirPath = '.', maxLevel = 1, noSize = true, collaps
 				n.data.value = calcSize;
 			} else if (n.data.isFile) {
 				n.data.value = n.data.size;
+			} else {
+				// For directories without calculated size, use 0 (will be updated as data streams in)
+				n.data.value = 0;
 			}
 			// Recursively populate children
 			if (n.children) {
@@ -402,7 +535,7 @@ const TreeVisualization = ({ dirPath = '.', maxLevel = 1, noSize = true, collaps
 		
 		populateValues(node);
 		
-		return <TreeMapView selectedNode={node} stdout={stdout} />;
+		return <TreeMapView selectedNode={node} stdout={stdout} calculatedSizes={calculatedSizes} loadingPaths={loadingPaths} />;
 	}
 
 	const start = Math.max(0, selectedIndex - Math.floor(viewportHeight / 2));
@@ -413,9 +546,16 @@ const TreeVisualization = ({ dirPath = '.', maxLevel = 1, noSize = true, collaps
 
 	return (
 		<Box flexDirection="column">
-			<Text color={oneHunter.textAlt} dimColor>
-				↑/↓: Navigate | Enter: Toggle | d: Size | t: Traverse | m: Map | Esc/q: Quit
-			</Text>
+			<Box justifyContent="space-between">
+				<Text color={oneHunter.textAlt} dimColor>
+					↑/↓: Navigate | Enter: Toggle | d: Size | t: Traverse | m: Map | q: Quit
+				</Text>
+				{loadingPaths.size > 0 && (
+					<Text color={oneHunter.yellow}>
+						{' '}{SPINNER_FRAMES[spinnerFrame]} Loading {loadingPaths.size}...
+					</Text>
+				)}
+			</Box>
 			{viewportNodes.map((node, i) => (
 				<TreeRow
 					key={start + i}
