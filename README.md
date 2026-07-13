@@ -9,13 +9,17 @@ A terminal-based interactive directory visualizer, like `tree` but with keyboard
 ### try it without installing
 
 ```bash
-npx tri-cli .
+npx --yes tri-cli@latest .
 ```
+
+To run a specific release instead, replace `latest` with its version, for
+example `npx --yes tri-cli@0.0.56 .`.
 
 ### via npm
 
 ```bash
-npm install -g tri-cli
+npm install --global tri-cli
+tri .
 ```
 
 ### on a cluster
@@ -46,10 +50,13 @@ Each tagged release includes a `.deb` package. Download the matching
 `tri-cli_<version>_all.deb` asset, then install it with apt:
 
 ```bash
+curl -LO https://github.com/jwilber/tri-cli/releases/download/v<version>/tri-cli_<version>_all.deb
 sudo apt install ./tri-cli_<version>_all.deb
+tri .
 ```
 
-For a repository-backed `apt install tri-cli` setup, see
+Replace `<version>` with a release version, such as `0.0.56`. For a
+repository-backed `apt install tri-cli` setup, see
 [DEBIAN.md](DEBIAN.md).
 
 ## Usage
