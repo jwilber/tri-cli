@@ -1,0 +1,70 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Validate tag version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+
+      - run: npm ci
+      - run: npm test
+      - run: mkdir -p release
+      - run: npm pack --pack-destination release
+
+      - name: Build Debian package
+        run: ./scripts/build-deb.sh release/*.tgz
+
+      - name: Create Homebrew formula artifact
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          sha256="$(sha256sum "release/tri-cli-${version}.tgz" | awk '{print $1}')"
+          ./scripts/render-formula.sh "$version" "$sha256" release/tri-cli.rb
+
+      - run: sha256sum release/*.tgz release/*.deb release/*.rb > release/SHA256SUMS
+
+      - name: Publish to npm
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish release/*.tgz
+
+      - name: Update Homebrew tap
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          HOMEBREW_TAP_REPOSITORY: ${{ vars.HOMEBREW_TAP_REPOSITORY }}
+          HOMEBREW_TAP_BRANCH: ${{ vars.HOMEBREW_TAP_BRANCH }}
+          HOMEBREW_TAP_FORMULA_PATH: ${{ vars.HOMEBREW_TAP_FORMULA_PATH }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "HOMEBREW_TAP_TOKEN is not configured; skipping tap update."
+            exit 0
+          fi
+          ./scripts/publish-homebrew-tap.sh release/tri-cli.rb "Update tri-cli to v${GITHUB_REF_NAME#v}"
+
+      - name: Upload GitHub release assets
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            release/*.tgz
+            release/*.deb
+            release/*.rb
+            release/SHA256SUMS

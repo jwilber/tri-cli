@@ -1,6 +1,6 @@
 {
 	"name": "tri-cli",
-	"version": "0.0.3",
+	"version": "0.0.56",
 	"description": "Interactive CLI directory tree visualizer with treemap view",
 	"author": "Jared Wilber",
 	"license": "MIT",
@@ -16,6 +16,10 @@
 		"type": "git",
 		"url": "https://github.com/jwilber/tri-cli.git"
 	},
+	"homepage": "https://github.com/jwilber/tri-cli#readme",
+	"bugs": {
+		"url": "https://github.com/jwilber/tri-cli/issues"
+	},
 	"bin": {
 		"tri": "dist/cli.js"
 	},
@@ -24,21 +28,31 @@
 		"node": ">=16"
 	},
 	"scripts": {
-		"build": "babel --out-dir=dist source",
+		"build": "babel --delete-dir-on-start --out-dir=dist source",
 		"postbuild": "chmod +x dist/cli.js",
 		"dev": "babel --out-dir=dist --watch source",
-		"test": "prettier --check . && xo && ava",
-		"test:local": "npm run build && tri --dir . -L 2"
+		"prepack": "npm run build",
+		"test": "npm run build && npm run test:release && prettier --check . && xo && ava",
+		"test:release": "bash -n scripts/build-deb.sh && bash -n scripts/render-formula.sh && bash -n scripts/update-formula.sh && bash -n scripts/publish-homebrew-tap.sh && ./scripts/render-formula.sh 0.0.0 0000000000000000000000000000000000000000000000000000000000000000 /tmp/tri-cli-formula.rb",
+		"test:local": "npm run build && node dist/cli.js --dir . -L 2",
+		"release:pack": "npm pack --pack-destination release",
+		"package:deb": "./scripts/build-deb.sh"
+	},
+	"publishConfig": {
+		"access": "public"
 	},
 	"files": [
 		"dist"
 	],
+	"bundleDependencies": [
+		"d3-hierarchy",
+		"ink",
+		"react"
+	],
 	"dependencies": {
 		"d3-hierarchy": "^3.1.2",
 		"ink": "^4.1.0",
-		"meow": "^11.0.0",
-		"react": "^18.2.0",
-		"tri-cli": "^0.0.3"
+		"react": "^18.2.0"
 	},
 	"devDependencies": {
 		"@babel/cli": "^7.21.0",
@@ -49,18 +63,14 @@
 		"eslint-config-xo-react": "^0.27.0",
 		"eslint-plugin-react": "^7.32.2",
 		"eslint-plugin-react-hooks": "^4.6.0",
-		"import-jsx": "^5.0.0",
-		"ink-testing-library": "^3.0.0",
+		"ink-testing-library": "^4.0.0",
 		"prettier": "^2.8.7",
 		"xo": "^0.53.1"
 	},
 	"ava": {
 		"environmentVariables": {
 			"NODE_NO_WARNINGS": "1"
-		},
-		"nodeArguments": [
-			"--loader=import-jsx"
-		]
+		}
 	},
 	"xo": {
 		"extends": "xo-react",

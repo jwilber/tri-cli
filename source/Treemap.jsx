@@ -1,202 +1,182 @@
-import React from 'react';
-import {Text, Box} from 'ink';
+/* eslint-disable unicorn/filename-case */
+import React, {useMemo} from 'react';
+import {Box, Text} from 'ink';
 import {hierarchy, treemap, treemapBinary} from 'd3-hierarchy';
+import {getDirectoryColor, getFileColor, theme} from './theme.js';
+import {formatBytes} from './utils.js';
 
-// One Hunter color scheme
-const oneHunter = {
-	bg: '#282c34',
-	bgAlt: '#21252b',
-	text: '#abb2bf',
-	textAlt: '#5c6370',
-	red: '#e06c75',
-	orange: '#d19a66',
-	yellow: '#e5c07b',
-	green: '#98c379',
-	cyan: '#56b6c2',
-	blue: '#61afef',
-	purple: '#c678dd',
-	magenta: '#c678dd',
+const createGrid = (width, height, color = theme.muted) =>
+	Array.from({length: height}, (_, y) =>
+		Array.from({length: width}, () => ({character: ' ', color, y})),
+	);
+
+const setCell = (grid, {x, y, character, color}) => {
+	if (y < 0 || y >= grid.length || x < 0 || x >= grid[y].length) return;
+	grid[y][x] = {character, color, y};
 };
 
-// Expanded color palette for directories
-const dirColors = [
-	oneHunter.blue,
-	oneHunter.cyan,
-	oneHunter.green,
-	oneHunter.yellow,
-	oneHunter.orange,
-	oneHunter.red,
-	oneHunter.purple,
-	oneHunter.magenta,
-	'#4a9eff',
-	'#7ec699',
-	'#e8b339',
-	'#ff7eb6',
-];
+const getBorderCharacter = (x, y, {x0, y0, x1, y1}) => {
+	const width = x1 - x0;
+	const height = y1 - y0;
+	if (width === 1 && height === 1) return '·';
+	if (width === 1) return '│';
+	if (height === 1) return '─';
 
-// Function to format bytes to human readable
-const formatBytes = bytes => {
-	if (bytes === 0) return '0 B';
-	const k = 1024;
-	const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-	const i = Math.floor(Math.log(bytes) / Math.log(k));
-	return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+	const isTop = y === y0;
+	const isBottom = y === y1 - 1;
+	const isLeft = x === x0;
+	const isRight = x === x1 - 1;
+	if (isTop && isLeft) return '┌';
+	if (isTop && isRight) return '┐';
+	if (isBottom && isLeft) return '└';
+	if (isBottom && isRight) return '┘';
+	if (isTop || isBottom) return '─';
+	if (isLeft || isRight) return '│';
+	return null;
 };
 
-// Get color based on file extension
-const getFileColor = filename => {
-	const ext = filename.match(/\.[^.]+$/)?.[0]?.toLowerCase();
-	const colorMap = {
-		'.js': oneHunter.yellow,
-		'.jsx': oneHunter.yellow,
-		'.ts': oneHunter.blue,
-		'.tsx': oneHunter.blue,
-		'.py': oneHunter.green,
-		'.rb': oneHunter.red,
-		'.json': oneHunter.purple,
-		'.html': oneHunter.cyan,
-		'.css': oneHunter.cyan,
-		'.md': oneHunter.text,
-		'.txt': oneHunter.textAlt,
-		'.sh': oneHunter.green,
-		'.yml': oneHunter.purple,
-		'.yaml': oneHunter.purple,
-		'.xml': oneHunter.orange,
-		'.svg': oneHunter.cyan,
-		'.png': oneHunter.blue,
-		'.jpg': oneHunter.blue,
-		'.gif': oneHunter.blue,
-		'.pdf': oneHunter.red,
-	};
-	return colorMap[ext] || oneHunter.text;
-};
-
-// Simple hash function for consistent color assignment
-const hashString = str => {
-	let hash = 0;
-	for (let i = 0; i < str.length; i++) {
-		const char = str.charCodeAt(i);
-		hash = (hash << 5) - hash + char;
-		hash = hash & hash;
-	}
-	return Math.abs(hash);
-};
-
-// Assign colors to directory groups
-const assignGroupColors = root => {
-	const colorMap = new Map();
-
-	if (root.children) {
-		root.children.forEach(child => {
-			if (!child.data.isFile) {
-				const colorIndex = hashString(child.data.name) % dirColors.length;
-				colorMap.set(child.data.name, dirColors[colorIndex]);
-			}
-		});
-	}
-
-	root.descendants().forEach(node => {
-		if (!node.data.isFile && node !== root) {
-			let topAncestor = node;
-			while (topAncestor.parent && topAncestor.parent !== root) {
-				topAncestor = topAncestor.parent;
-			}
-
-			if (colorMap.has(topAncestor.data.name)) {
-				node.groupColor = colorMap.get(topAncestor.data.name);
-			} else {
-				const colorIndex = hashString(node.data.name) % dirColors.length;
-				node.groupColor = dirColors[colorIndex];
-			}
+const drawBorder = (grid, bounds, color) => {
+	for (let y = bounds.y0; y < bounds.y1; y += 1) {
+		for (let x = bounds.x0; x < bounds.x1; x += 1) {
+			const character = getBorderCharacter(x, y, bounds);
+			if (character) setCell(grid, {x, y, character, color});
 		}
-	});
-
-	return colorMap;
+	}
 };
 
-export const TreeMapView = ({selectedNode, stdout}) => {
-	if (!selectedNode || !selectedNode.data) {
-		return (
-			<Box flexDirection="column">
-				<Text bold color={oneHunter.red}>
-					Error: Invalid node selected
-				</Text>
-				<Text dimColor color={oneHunter.textAlt}>
-					Press 't' to go back to tree view
-				</Text>
-			</Box>
+const truncateText = (value, maxLength) => {
+	const characters = [...value];
+	if (characters.length <= maxLength) return value;
+	if (maxLength <= 1) return '…'.slice(0, maxLength);
+	return `${characters.slice(0, maxLength - 1).join('')}…`;
+};
+
+const drawText = (grid, {value, x, y, maxLength, color}) => {
+	const text = truncateText(value, maxLength);
+	for (const [index, character] of [...text].entries()) {
+		setCell(grid, {x: x + index, y, character, color});
+	}
+};
+
+const drawCenteredText = (grid, value, y, color) => {
+	const width = grid[0]?.length || 0;
+	const maxLength = Math.max(0, width - 2);
+	if (maxLength === 0) return;
+	const text = truncateText(value, maxLength);
+	const x = Math.max(1, Math.floor((width - [...text].length) / 2));
+	drawText(grid, {value: text, x, y, maxLength, color});
+};
+
+const getNodeBounds = (node, width, height) => ({
+	x0: Math.max(0, Math.min(width, Math.round(node.x0))),
+	y0: Math.max(0, Math.min(height, Math.round(node.y0))),
+	x1: Math.max(0, Math.min(width, Math.round(node.x1))),
+	y1: Math.max(0, Math.min(height, Math.round(node.y1))),
+});
+
+const getNodeLabel = (node, maxLength) => {
+	const {name, size} = node.data;
+	const detailed = `${name} ${formatBytes(size)}`;
+	if ([...detailed].length <= maxLength) return detailed;
+	return truncateText(name, maxLength);
+};
+
+export const createTreemapRoot = (data, width, height) => {
+	const root = hierarchy(data)
+		.sum(node => {
+			const hasChildren = Boolean(node.children?.length);
+			if (hasChildren) return 0;
+			return Math.max(1, Number.isFinite(node.size) ? node.size : 0);
+		})
+		.sort(
+			(left, right) =>
+				(right.value || 0) - (left.value || 0) ||
+				left.data.name.localeCompare(right.data.name),
 		);
+
+	treemap()
+		.tile(treemapBinary)
+		.size([Math.max(1, width), Math.max(1, height)])
+		.paddingInner(width > 2 && height > 2 ? 1 : 0)
+		.round(true)(root);
+
+	return root;
+};
+
+export const createDirectoryGrid = (data, width, height) => {
+	const root = createTreemapRoot(data, width, height);
+	const nodes = root.children || [];
+	const grid = createGrid(width, height);
+
+	for (const node of nodes) {
+		const bounds = getNodeBounds(node, width, height);
+		const boxWidth = bounds.x1 - bounds.x0;
+		const boxHeight = bounds.y1 - bounds.y0;
+		if (boxWidth < 1 || boxHeight < 1) continue;
+
+		const color = node.data.isFile
+			? getFileColor(node.data.name)
+			: getDirectoryColor(node.data.path || node.data.name);
+		drawBorder(grid, bounds, color);
+
+		const innerWidth = boxWidth - 2;
+		if (innerWidth > 0 && boxHeight >= 3) {
+			drawText(grid, {
+				value: getNodeLabel(node, innerWidth),
+				x: bounds.x0 + 1,
+				y: bounds.y0 + 1,
+				maxLength: innerWidth,
+				color,
+			});
+		}
 	}
 
-	const width = Math.min(stdout?.columns || 80, 120) - 4;
-	const height = Math.min(stdout?.rows || 24, 40) - 8;
+	return {grid, nodes};
+};
 
-	// If it's a file, show just that file as a big rectangle
-	if (selectedNode.data.isFile) {
-		const color = getFileColor(selectedNode.data.name);
-		const name = selectedNode.data.name;
-		const sizeStr = selectedNode.data.size
-			? formatBytes(selectedNode.data.size)
-			: '';
+const createFileGrid = (data, width, height) => {
+	const color = getFileColor(data.name);
+	const grid = createGrid(width, height, color);
+	const bounds = {x0: 0, y0: 0, x1: width, y1: height};
+	drawBorder(grid, bounds, color);
 
-		const grid = Array(height)
-			.fill(null)
-			.map(() =>
-				Array(width)
-					.fill(null)
-					.map(() => ({char: ' ', color})),
-			);
-
-		for (let y = 0; y < height; y++) {
-			for (let x = 0; x < width; x++) {
-				const isTop = y === 0;
-				const isBottom = y === height - 1;
-				const isLeft = x === 0;
-				const isRight = x === width - 1;
-
-				let char = ' ';
-
-				if (isTop && isLeft) char = '┌';
-				else if (isTop && isRight) char = '┐';
-				else if (isBottom && isLeft) char = '└';
-				else if (isBottom && isRight) char = '┘';
-				else if (isTop || isBottom) char = '─';
-				else if (isLeft || isRight) char = '│';
-				else char = ' ';
-
-				grid[y][x] = {char, color};
-			}
+	if (width >= 3 && height >= 3) {
+		const middle = Math.floor(height / 2);
+		drawCenteredText(grid, data.name, middle, color);
+		if (height >= 5 && middle + 1 < height - 1) {
+			drawCenteredText(grid, formatBytes(data.size), middle + 1, color);
 		}
+	}
 
-		const midY = Math.floor(height / 2);
-		const nameX = Math.floor((width - name.length) / 2);
+	return grid;
+};
 
-		if (midY >= 2 && midY < height - 2) {
-			for (let i = 0; i < name.length && nameX + i < width - 2; i++) {
-				if (nameX + i > 0) {
-					grid[midY][nameX + i] = {char: name[i], color};
-				}
-			}
+const createEmptyGrid = (width, height) => {
+	const grid = createGrid(width, height);
+	if (width >= 3)
+		drawCenteredText(
+			grid,
+			'Empty directory',
+			Math.floor(height / 2),
+			theme.muted,
+		);
+	return grid;
+};
 
-			if (sizeStr && midY + 2 < height - 2) {
-				const sizeX = Math.floor((width - sizeStr.length) / 2);
-				for (let i = 0; i < sizeStr.length && sizeX + i < width - 2; i++) {
-					if (sizeX + i > 0) {
-						grid[midY + 2][sizeX + i] = {char: sizeStr[i], color};
+function Grid({grid}) {
+	return (
+		<>
+			{grid.map(row => {
+				const segments = [];
+				let currentColor;
+				let currentText = '';
+
+				for (const cell of row) {
+					if (cell.color === currentColor) {
+						currentText += cell.character;
+						continue;
 					}
-				}
-			}
-		}
 
-		const lines = grid.map((row, y) => {
-			const segments = [];
-			let currentColor = null;
-			let currentText = '';
-
-			row.forEach(cell => {
-				if (cell.color === currentColor) {
-					currentText += cell.char;
-				} else {
 					if (currentText) {
 						segments.push(
 							<Text key={segments.length} color={currentColor}>
@@ -204,216 +184,11 @@ export const TreeMapView = ({selectedNode, stdout}) => {
 							</Text>,
 						);
 					}
+
 					currentColor = cell.color;
-					currentText = cell.char;
+					currentText = cell.character;
 				}
-			});
 
-			if (currentText) {
-				segments.push(
-					<Text key={segments.length} color={currentColor}>
-						{currentText}
-					</Text>,
-				);
-			}
-
-			return <Box key={y}>{segments}</Box>;
-		});
-
-		return (
-			<Box flexDirection="column">
-				<Text bold color={oneHunter.cyan}>
-					TreeMap View: {name} (File)
-				</Text>
-				<Text dimColor color={oneHunter.textAlt}>
-					Press 't' to toggle back to tree view | Ctrl+C: Exit
-				</Text>
-				<Box
-					borderStyle="single"
-					borderColor={oneHunter.textAlt}
-					flexDirection="column"
-					marginTop={1}
-				>
-					{lines}
-				</Box>
-				<Text dimColor color={oneHunter.textAlt} marginTop={1}>
-					File: {name} | Size: {sizeStr || 'Unknown'}
-				</Text>
-			</Box>
-		);
-	}
-
-	// It's a directory - show treemap of its children
-	if (!selectedNode.children || selectedNode.children.length === 0) {
-		return (
-			<Box flexDirection="column">
-				<Text bold color={oneHunter.cyan}>
-					TreeMap View: {selectedNode.data.name} (Empty Directory)
-				</Text>
-				<Text dimColor color={oneHunter.textAlt}>
-					Press 't' to toggle back to tree view | Ctrl+C: Exit
-				</Text>
-				<Box
-					borderStyle="single"
-					borderColor={oneHunter.textAlt}
-					marginTop={1}
-					padding={1}
-				>
-					<Text color={oneHunter.textAlt}>
-						This directory is empty or collapsed.
-					</Text>
-				</Box>
-			</Box>
-		);
-	}
-
-	const root = hierarchy(selectedNode.data)
-		.sum(d => d.value || 0)
-		.sort((a, b) => (b.value || 0) - (a.value || 0));
-
-	assignGroupColors(root);
-
-	// Apply treemap layout
-	treemap()
-		.tile(treemapBinary)
-		.size([width, height])
-		.paddingOuter(0.5)
-		.paddingTop(0.5)
-		.paddingInner(0.5)
-		.round(true)(root);
-
-	// Only show direct children (first level)
-	const firstLevelNodes = root.children || [];
-
-	const grid = Array(height)
-		.fill(null)
-		.map(() =>
-			Array(width)
-				.fill(null)
-				.map(() => ({char: ' ', color: oneHunter.textAlt})),
-		);
-
-	// Draw each first-level child
-	firstLevelNodes.forEach(node => {
-		const x0 = Math.floor(node.x0);
-		const y0 = Math.floor(node.y0);
-		const x1 = Math.ceil(node.x1);
-		const y1 = Math.ceil(node.y1);
-		const isFile = node.data.isFile;
-
-		const boxWidth = x1 - x0;
-		const boxHeight = y1 - y0;
-
-		if (boxWidth < 1 || boxHeight < 1) return;
-
-		// Color based on type
-		const color = isFile
-			? getFileColor(node.data.name)
-			: node.groupColor || oneHunter.blue;
-
-		// Draw border
-		for (let y = y0; y < y1 && y < height; y++) {
-			for (let x = x0; x < x1 && x < width; x++) {
-				const isTop = y === y0;
-				const isBottom = y === y1 - 1;
-				const isLeft = x === x0;
-				const isRight = x === x1 - 1;
-
-				// Only draw borders
-				if (isTop || isBottom || isLeft || isRight) {
-					let char = ' ';
-
-					if (isTop && isLeft) char = '┌';
-					else if (isTop && isRight) char = '┐';
-					else if (isBottom && isLeft) char = '└';
-					else if (isBottom && isRight) char = '┘';
-					else if (isTop || isBottom) char = '─';
-					else if (isLeft || isRight) char = '│';
-
-					grid[y][x] = {char, color};
-				}
-			}
-		}
-
-		// Draw label if there's room
-		const name = node.data.name;
-		const sizeStr = node.value ? ` ${formatBytes(node.value)}` : '';
-
-		if (boxWidth >= 8 && boxHeight >= 2) {
-			const labelY = y0 + 1;
-			const labelX = x0 + 1;
-			const maxLength = boxWidth - 2;
-
-			// Combine name and size
-			let label = name + sizeStr;
-			if (label.length > maxLength) {
-				// Try just name
-				if (name.length <= maxLength) {
-					label = name;
-				} else {
-					label = name.slice(0, maxLength - 1) + '…';
-				}
-			}
-
-			if (labelY >= 0 && labelY < height && labelY < y1) {
-				for (
-					let i = 0;
-					i < label.length && labelX + i < x1 - 1 && labelX + i < width;
-					i++
-				) {
-					grid[labelY][labelX + i] = {char: label[i], color};
-				}
-			}
-		} else if (boxWidth >= 4 && boxHeight >= 2) {
-			// Show abbreviated label
-			const labelY = y0 + 1;
-			const labelX = x0 + 1;
-			const maxLength = boxWidth - 2;
-
-			let label;
-			if (isFile) {
-				// Show extension for files
-				const ext = name.match(/\.([^.]{1,3})$/)?.[1];
-				label = ext || name.slice(0, maxLength);
-			} else {
-				// Show first few chars for directories
-				label = name.slice(0, maxLength);
-			}
-
-			if (labelY >= 0 && labelY < height && label) {
-				for (
-					let i = 0;
-					i < label.length && labelX + i < x1 - 1 && labelX + i < width;
-					i++
-				) {
-					grid[labelY][labelX + i] = {char: label[i], color};
-				}
-			}
-		} else if (boxWidth >= 2 && boxHeight >= 2) {
-			// Just first character
-			const centerY = Math.floor((y0 + y1) / 2);
-			const centerX = Math.floor((x0 + x1) / 2);
-			if (centerY >= 0 && centerY < height && centerX >= 0 && centerX < width) {
-				grid[centerY][centerX] = {char: name[0] || '•', color};
-			}
-		} else if (boxWidth === 1 && boxHeight === 1) {
-			// Tiny dot
-			if (y0 >= 0 && y0 < height && x0 >= 0 && x0 < width) {
-				grid[y0][x0] = {char: '·', color};
-			}
-		}
-	});
-
-	// Convert grid to Ink components
-	const lines = grid.map((row, y) => {
-		const segments = [];
-		let currentColor = null;
-		let currentText = '';
-
-		row.forEach(cell => {
-			if (cell.color === currentColor) {
-				currentText += cell.char;
-			} else {
 				if (currentText) {
 					segments.push(
 						<Text key={segments.length} color={currentColor}>
@@ -421,43 +196,138 @@ export const TreeMapView = ({selectedNode, stdout}) => {
 						</Text>,
 					);
 				}
-				currentColor = cell.color;
-				currentText = cell.char;
-			}
-		});
 
-		if (currentText) {
-			segments.push(
-				<Text key={segments.length} color={currentColor}>
-					{currentText}
-				</Text>,
-			);
-		}
+				return <Box key={row[0].y}>{segments}</Box>;
+			})}
+		</>
+	);
+}
 
-		return <Box key={y}>{segments}</Box>;
-	});
+const getViewport = stdout => {
+	const columns = Math.max(1, Math.floor(stdout?.columns || 80));
+	const rows = Math.max(1, Math.floor(stdout?.rows || 24));
+	const showInstructions = rows >= 8;
+	const showFooter = rows >= 7;
+	const mapMargin = rows >= 6 ? 1 : 0;
+	const footerMargin = rows >= 9 ? 1 : 0;
+	const reservedRows =
+		1 +
+		Number(showInstructions) +
+		2 +
+		mapMargin +
+		Number(showFooter) +
+		footerMargin;
+
+	return {
+		columns,
+		rows,
+		width: Math.max(1, Math.min(columns, 120) - 2),
+		height: Math.max(1, Math.min(rows, 40) - reservedRows),
+		showInstructions,
+		showFooter,
+		mapMargin,
+		footerMargin,
+		isTooSmall: columns < 3 || rows < 4,
+	};
+};
+
+function TreemapFrame({title, footer, grid, viewport}) {
+	if (viewport.isTooSmall) {
+		return (
+			<Text color={theme.red} wrap="truncate-end">
+				Terminal too small for treemap
+			</Text>
+		);
+	}
 
 	return (
-		<Box flexDirection="column">
-			<Text bold color={oneHunter.cyan}>
-				TreeMap View: {selectedNode.data.name}
+		<Box flexDirection="column" width={viewport.columns}>
+			<Text bold color={theme.cyan} wrap="truncate-end">
+				{title}
 			</Text>
-			<Text dimColor color={oneHunter.textAlt}>
-				Press 't' to toggle back to tree view | ↑/↓: Navigate in tree | Ctrl+C:
-				Exit
-			</Text>
+			{viewport.showInstructions && (
+				<Text dimColor color={theme.muted} wrap="truncate-end">
+					t Tree view · q Quit
+				</Text>
+			)}
 			<Box
 				borderStyle="single"
-				borderColor={oneHunter.textAlt}
+				borderColor={theme.muted}
 				flexDirection="column"
-				marginTop={1}
+				marginTop={viewport.mapMargin}
 			>
-				{lines}
+				<Grid grid={grid} />
 			</Box>
-			<Text dimColor color={oneHunter.textAlt} marginTop={1}>
-				Showing {firstLevelNodes.length} items | Total:{' '}
-				{formatBytes(root.value || 0)}
-			</Text>
+			{viewport.showFooter && (
+				<Text
+					dimColor
+					color={theme.muted}
+					marginTop={viewport.footerMargin}
+					wrap="truncate-end"
+				>
+					{footer}
+				</Text>
+			)}
 		</Box>
 	);
-};
+}
+
+function FileTreemap({data, viewport}) {
+	const grid = useMemo(
+		() => createFileGrid(data, viewport.width, viewport.height),
+		[data, viewport.width, viewport.height],
+	);
+	return (
+		<TreemapFrame
+			title={`Treemap: ${data.name} (file)`}
+			footer={`File · ${formatBytes(data.size)}`}
+			grid={grid}
+			viewport={viewport}
+		/>
+	);
+}
+
+function EmptyTreemap({data, viewport}) {
+	const grid = useMemo(
+		() => createEmptyGrid(viewport.width, viewport.height),
+		[viewport.width, viewport.height],
+	);
+	return (
+		<TreemapFrame
+			title={`Treemap: ${data.name} (empty)`}
+			footer="0 items · Total: 0 B"
+			grid={grid}
+			viewport={viewport}
+		/>
+	);
+}
+
+function DirectoryTreemap({data, viewport}) {
+	const {grid, nodes} = useMemo(
+		() => createDirectoryGrid(data, viewport.width, viewport.height),
+		[data, viewport.width, viewport.height],
+	);
+	return (
+		<TreemapFrame
+			title={`Treemap: ${data.name}`}
+			footer={`${nodes.length} items · Total: ${formatBytes(data.size)}`}
+			grid={grid}
+			viewport={viewport}
+		/>
+	);
+}
+
+export function TreeMapView({selectedNode, stdout}) {
+	if (!selectedNode?.data) {
+		return <Text color={theme.red}>Error: No node selected</Text>;
+	}
+
+	const viewport = getViewport(stdout);
+	const {data} = selectedNode;
+	if (data.isFile) return <FileTreemap data={data} viewport={viewport} />;
+	if (!data.children?.length) {
+		return <EmptyTreemap data={data} viewport={viewport} />;
+	}
+
+	return <DirectoryTreemap data={data} viewport={viewport} />;
+}
