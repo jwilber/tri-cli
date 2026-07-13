@@ -43,7 +43,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish release/*.tgz
+        run: npm publish ./release/*.tgz
 
       - name: Update Homebrew tap
         if: startsWith(github.ref, 'refs/tags/')
